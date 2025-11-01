@@ -1,52 +1,5 @@
 # 📊 ANALYZING SAMPLE DATA
 
----
-
-## SAMPLE DATA ANALYSIS
-
-**Sample size:** 4 samples
-
-### Main tags in sample
-| Tag | Samples |
-|------|----------|
-| single_phrase | 1 |
-| grounding | 1 |
-| detailed_description | 1 |
-| visual_QA | 1 |
-
-### Sub tags in sample
-| Sub-tag | Samples |
-|----------|----------|
-| Knife_action_performer | 1 |
-| grounding | 1 |
-| detailed_description | 1 |
-| surgical_instrument_action | 1 |
-
-### Question patterns
-| Pattern | Count |
-|----------|--------|
-| what_questions | 1 |
-| where_questions | 1 |
-| give_questions | 1 |
-| can_you_questions | 1 |
-
-### Answer characteristics
-| Type | Count |
-|-------|--------|
-| Bounding boxes | 2 |
-| Single words | 1 |
-| Long descriptions | 2 |
-
----
-
-## 🎯 KEY INSIGHTS FROM SAMPLE
-- Multi-task dataset with 4 main task types  
-- Mix of short answers (single phrases) and complex descriptions  
-- Spatial reasoning with bounding box coordinates  
-- Surgical domain specialization  
-- Requires understanding of surgical instruments and procedures  
-
----
 
 # 🧠 CoPESD DATASET ANALYSIS FOR VLM FINE-TUNING
 

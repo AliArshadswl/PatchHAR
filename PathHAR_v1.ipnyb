@@ -1,0 +1,1016 @@
+"""
+Improved PatchTST-HAR Implementation
+====================================
+Single-file version with all improvements for Jupyter notebook use.
+
+Key Improvements:
+- Configuration management system
+- Memory-efficient operations
+- Better error handling
+- Performance optimizations
+- Modular structure within single file
+"""
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.utils.data import Dataset, DataLoader
+import numpy as np
+import pandas as pd
+from sklearn.preprocessing import StandardScaler, LabelEncoder
+from sklearn.metrics import f1_score, accuracy_score, classification_report, confusion_matrix
+from sklearn.model_selection import train_test_split
+from sklearn.hmm import GaussianHMM
+import warnings
+from typing import Dict, List, Tuple, Optional, Union
+import logging
+from dataclasses import dataclass, field
+from pathlib import Path
+import json
+import time
+from collections import defaultdict
+import psutil
+import gc
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+# Suppress warnings for cleaner output
+warnings.filterwarnings('ignore')
+
+# ============================================================================
+# CONFIGURATION MANAGEMENT
+# ============================================================================
+
+@dataclass
+class DataConfig:
+    """Data configuration with validation."""
+    sequence_length: int = 128
+    hop_length: int = 64
+    n_classes: int = 6
+    test_size: float = 0.2
+    random_state: int = 42
+    batch_size: int = 32
+    num_workers: int = 2
+    
+    def validate(self):
+        """Validate configuration parameters."""
+        if self.sequence_length <= 0:
+            raise ValueError(f"sequence_length must be positive, got {self.sequence_length}")
+        if not 0 < self.test_size < 1:
+            raise ValueError(f"test_size must be between 0 and 1, got {self.test_size}")
+        if self.batch_size <= 0:
+            raise ValueError(f"batch_size must be positive, got {self.batch_size}")
+        logger.info("DataConfig validation passed")
+
+@dataclass
+class ModelConfig:
+    """Model configuration with validation."""
+    d_model: int = 512
+    n_heads: int = 8
+    n_layers: int = 6
+    patch_size: int = 16
+    dropout: float = 0.1
+    aggregation_method: str = 'attention'  # 'attention', 'mean', 'max'
+    
+    def __post_init__(self):
+        if self.d_model % self.n_heads != 0:
+            raise ValueError(f"d_model ({self.d_model}) must be divisible by n_heads ({self.n_heads})")
+        if not 0 <= self.dropout <= 1:
+            raise ValueError(f"dropout must be between 0 and 1, got {self.dropout}")
+        
+    def validate(self):
+        """Validate configuration parameters."""
+        valid_methods = ['attention', 'mean', 'max']
+        if self.aggregation_method not in valid_methods:
+            raise ValueError(f"aggregation_method must be one of {valid_methods}, got {self.aggregation_method}")
+        logger.info("ModelConfig validation passed")
+
+@dataclass 
+class TrainingConfig:
+    """Training configuration with validation."""
+    learning_rate: float = 1e-4
+    weight_decay: float = 1e-5
+    n_epochs: int = 100
+    patience: int = 10
+    min_delta: float = 1e-4
+    gradient_clip_val: float = 1.0
+    use_amp: bool = True  # Automatic mixed precision
+    device: str = field(default_factory=lambda: 'cuda' if torch.cuda.is_available() else 'cpu')
+    
+    def validate(self):
+        """Validate configuration parameters."""
+        if self.learning_rate <= 0:
+            raise ValueError(f"learning_rate must be positive, got {self.learning_rate}")
+        if self.n_epochs <= 0:
+            raise ValueError(f"n_epochs must be positive, got {self.n_epochs}")
+        if self.patience < 0:
+            raise ValueError(f"patience must be non-negative, got {self.patience}")
+        logger.info("TrainingConfig validation passed")
+
+@dataclass
+class ExperimentConfig:
+    """Complete experiment configuration."""
+    data: DataConfig = field(default_factory=DataConfig)
+    model: ModelConfig = field(default_factory=ModelConfig) 
+    training: TrainingConfig = field(default_factory=TrainingConfig)
+    experiment_name: str = "patchtst_har_v1"
+    save_path: str = "./experiments"
+    
+    def validate_all(self):
+        """Validate all sub-configurations."""
+        self.data.validate()
+        self.model.validate()
+        self.training.validate()
+        logger.info("All configurations validated successfully")
+    
+    def save(self, path: str):
+        """Save configuration to JSON."""
+        config_dict = {
+            'data': self.data.__dict__,
+            'model': self.model.__dict__,
+            'training': self.training.__dict__,
+            'experiment_name': self.experiment_name
+        }
+        with open(path, 'w') as f:
+            json.dump(config_dict, f, indent=2)
+        logger.info(f"Configuration saved to {path}")
+    
+    @classmethod
+    def load(cls, path: str) -> 'ExperimentConfig':
+        """Load configuration from JSON."""
+        with open(path, 'r') as f:
+            config_dict = json.load(f)
+        
+        data = DataConfig(**config_dict['data'])
+        model = ModelConfig(**config_dict['model'])
+        training = TrainingConfig(**config_dict['training'])
+        
+        config = cls(
+            data=data,
+            model=model,
+            training=training,
+            experiment_name=config_dict.get('experiment_name', 'loaded_experiment')
+        )
+        logger.info(f"Configuration loaded from {path}")
+        return config
+
+# ============================================================================
+# MEMORY MONITORING
+# ============================================================================
+
+class MemoryMonitor:
+    """Memory usage monitoring for training process."""
+    
+    def __init__(self):
+        self.process = psutil.Process()
+        self.peak_memory = 0
+        
+    def get_memory_usage(self) -> Dict[str, float]:
+        """Get current memory usage in MB."""
+        memory_info = self.process.memory_info()
+        gpu_memory = 0
+        
+        if torch.cuda.is_available():
+            gpu_memory = torch.cuda.memory_allocated() / 1024**2
+            
+        memory_mb = memory_info.rss / 1024**2
+        self.peak_memory = max(self.peak_memory, memory_mb)
+        
+        return {
+            'cpu_memory_mb': memory_mb,
+            'gpu_memory_mb': gpu_memory,
+            'peak_cpu_memory_mb': self.peak_memory
+        }
+    
+    def cleanup(self):
+        """Force garbage collection and clear GPU cache."""
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        logger.info("Memory cleanup completed")
+
+# ============================================================================
+# DATA PROCESSING
+# ============================================================================
+
+class HARRawDataset(Dataset):
+    """Raw HAR dataset for activity recognition."""
+    
+    def __init__(self, data: np.ndarray, labels: np.ndarray, config: DataConfig):
+        self.data = data
+        self.labels = labels
+        self.config = config
+        self.scaler = StandardScaler()
+        
+        # Fit scaler on data
+        self.data = self.scaler.fit_transform(data.reshape(-1, data.shape[-1])).reshape(data.shape)
+        logger.info(f"Dataset initialized: {len(self.data)} samples, {data.shape}")
+    
+    def __len__(self):
+        return len(self.data)
+    
+    def __getitem__(self, idx):
+        if torch.is_tensor(idx):
+            idx = idx.tolist()
+            
+        sample = {
+            'data': torch.FloatTensor(self.data[idx]),
+            'label': torch.LongTensor([self.labels[idx]])
+        }
+        return sample
+
+def create_sequences(data: np.ndarray, labels: np.ndarray, sequence_length: int, hop_length: int) -> Tuple[np.ndarray, np.ndarray]:
+    """Create overlapping sequences from time series data."""
+    sequences = []
+    sequence_labels = []
+    
+    for i in range(0, len(data) - sequence_length + 1, hop_length):
+        seq = data[i:i + sequence_length]
+        label = labels[i + sequence_length // 2]  # Use middle point label
+        
+        sequences.append(seq)
+        sequence_labels.append(label)
+    
+    return np.array(sequences), np.array(sequence_labels)
+
+# ============================================================================
+# TOPOLOGICAL FEATURES
+# ============================================================================
+
+def _safe_corr(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+    """Compute correlation with numerical stability."""
+    x_centered = x - x.mean()
+    y_centered = y - y.mean()
+    
+    # Check for valid variance
+    x_var = x_centered.var()
+    y_var = y_centered.var()
+    
+    if x_var < 1e-8 or y_var < 1e-8:
+        return torch.zeros_like(x.mean())
+    
+    correlation = (x_centered * y_centered).mean() / (torch.sqrt(x_var * y_var))
+    return correlation.clamp(-1.0, 1.0)
+
+def extract_topological_features(x: torch.Tensor, window_size: int = 20) -> torch.Tensor:
+    """Extract topological features from time series."""
+    features = []
+    batch_size, seq_len, n_features = x.shape
+    
+    try:
+        for b in range(min(batch_size, 8)):  # Limit batch size for memory
+            sample_features = []
+            
+            for feat_idx in range(min(n_features, 6)):  # Limit features for memory
+                time_series = x[b, :, feat_idx]
+                
+                # Simple persistence-like features
+                feature_vector = []
+                
+                # Mean and variance
+                feature_vector.extend([time_series.mean().item(), time_series.var().item()])
+                
+                # Autocorrelation at different lags
+                for lag in [1, 2, 5, 10]:
+                    if lag < len(time_series):
+                        if len(time_series) > lag:
+                            corr = _safe_corr(time_series[:-lag], time_series[lag:])
+                            feature_vector.append(corr.item())
+                        else:
+                            feature_vector.append(0.0)
+                    else:
+                        feature_vector.append(0.0)
+                
+                # Sliding window statistics
+                if len(time_series) >= window_size:
+                    windowed_mean = []
+                    for i in range(0, len(time_series) - window_size + 1, window_size // 2):
+                        window = time_series[i:i + window_size]
+                        windowed_mean.append(window.mean().item())
+                    
+                    if windowed_mean:
+                        feature_vector.append(np.mean(windowed_mean))
+                        feature_vector.append(np.std(windowed_mean))
+                    else:
+                        feature_vector.extend([0.0, 0.0])
+                else:
+                    feature_vector.extend([0.0, 0.0])
+                
+                sample_features.extend(feature_vector)
+            
+            # Pad to consistent length
+            target_length = 6 * (2 + 4 + 2)  # n_features * (mean_var + autocorr + window_stats)
+            while len(sample_features) < target_length:
+                sample_features.append(0.0)
+            
+            features.append(sample_features[:target_length])
+        
+        # Pad batch dimension
+        while len(features) < batch_size:
+            features.append(features[-1])
+        
+        result = torch.tensor(features, dtype=torch.float32)
+        logger.debug(f"Extracted topological features shape: {result.shape}")
+        return result
+        
+    except Exception as e:
+        logger.warning(f"Topological feature extraction failed: {e}, using zeros")
+        batch_size = x.shape[0]
+        target_length = 6 * (2 + 4 + 2)
+        return torch.zeros(batch_size, target_length, dtype=torch.float32)
+
+# ============================================================================
+# PATCHTST MODEL
+# ============================================================================
+
+class PositionalEncoding(nn.Module):
+    """Positional encoding for time series."""
+    
+    def __init__(self, d_model: int, max_len: int = 5000):
+        super().__init__()
+        pe = torch.zeros(max_len, d_model)
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() * 
+                           (-np.log(10000.0) / d_model))
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        pe = pe.unsqueeze(0).transpose(0, 1)
+        self.register_buffer('pe', pe)
+    
+    def forward(self, x):
+        return x + self.pe[:x.size(0), :]
+
+class PatchTSTBlock(nn.Module):
+    """PatchTST transformer block."""
+    
+    def __init__(self, d_model: int, n_heads: int, dropout: float):
+        super().__init__()
+        self.attention = nn.MultiheadAttention(d_model, n_heads, dropout=dropout, batch_first=True)
+        self.norm1 = nn.LayerNorm(d_model)
+        self.norm2 = nn.LayerNorm(d_model)
+        
+        self.ffn = nn.Sequential(
+            nn.Linear(d_model, d_model * 4),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(d_model * 4, d_model)
+        )
+        self.dropout = nn.Dropout(dropout)
+        
+    def forward(self, x, mask=None):
+        # Self-attention
+        attn_output, _ = self.attention(x, x, x, key_padding_mask=mask)
+        x = self.norm1(x + self.dropout(attn_output))
+        
+        # Feed-forward
+        ffn_output = self.ffn(x)
+        x = self.norm2(x + self.dropout(ffn_output))
+        
+        return x
+
+class TopologicalFeatureExtractor(nn.Module):
+    """Extract topological features from time series."""
+    
+    def __init__(self, input_dim: int, feature_dim: int):
+        super().__init__()
+        self.feature_extractor = nn.Sequential(
+            nn.Linear(input_dim, feature_dim),
+            nn.ReLU(),
+            nn.Dropout(0.1)
+        )
+        
+    def forward(self, x):
+        # x shape: (batch_size, seq_len, n_features)
+        batch_size, seq_len, n_features = x.shape
+        
+        # Extract features using the topological feature extraction function
+        topo_features = extract_topological_features(x)
+        
+        # Process through MLP
+        processed_features = self.feature_extractor(topo_features)
+        
+        return processed_features
+
+class PatchTSTHARModel(nn.Module):
+    """PatchTST model for Human Activity Recognition with topological features."""
+    
+    def __init__(self, config: ModelConfig, data_config: DataConfig):
+        super().__init__()
+        self.config = config
+        self.data_config = data_config
+        
+        # Input projection
+        self.input_projection = nn.Linear(data_config.sequence_length, config.d_model)
+        
+        # Positional encoding
+        self.pos_encoding = PositionalEncoding(config.d_model)
+        
+        # Patch embedding (simplified)
+        self.patch_embedding = nn.Linear(data_config.n_features if hasattr(data_config, 'n_features') else 6, config.d_model)
+        
+        # Transformer blocks
+        self.transformer_blocks = nn.ModuleList([
+            PatchTSTBlock(config.d_model, config.n_heads, config.dropout)
+            for _ in range(config.n_layers)
+        ])
+        
+        # Topological feature extractor
+        self.topo_extractor = TopologicalFeatureExtractor(
+            input_dim=6,  # Number of features
+            feature_dim=config.d_model // 4
+        )
+        
+        # Feature fusion
+        fusion_dim = config.d_model + config.d_model // 4
+        self.fusion_layer = nn.Linear(fusion_dim, config.d_model)
+        
+        # Classification head
+        self.classifier = nn.Sequential(
+            nn.Dropout(config.dropout),
+            nn.Linear(config.d_model, config.d_model // 2),
+            nn.ReLU(),
+            nn.Dropout(config.dropout),
+            nn.Linear(config.d_model // 2, data_config.n_classes)
+        )
+        
+        # Aggregation method
+        self.aggregation_method = config.aggregation_method
+        
+    def forward(self, x):
+        batch_size, seq_len, n_features = x.shape
+        
+        # Project to model dimension
+        x = self.input_projection(x.transpose(1, 2))  # (batch, d_model, seq_len)
+        x = x.transpose(1, 2)  # (batch, seq_len, d_model)
+        
+        # Add positional encoding
+        x = self.pos_encoding(x)
+        
+        # Process through transformer blocks
+        for block in self.transformer_blocks:
+            x = block(x)
+        
+        # Extract temporal features (pooling)
+        if self.aggregation_method == 'attention':
+            # Attention pooling
+            attn_weights = torch.softmax(x.mean(dim=1), dim=-1)
+            temporal_features = torch.sum(x * attn_weights.unsqueeze(-1), dim=1)
+        elif self.aggregation_method == 'mean':
+            temporal_features = x.mean(dim=1)
+        else:  # max
+            temporal_features = x.max(dim=1)[0]
+        
+        # Extract topological features
+        topo_features = self.topo_extractor(x)
+        
+        # Fusion of temporal and topological features
+        fused_features = torch.cat([temporal_features, topo_features], dim=-1)
+        fused_features = self.fusion_layer(fused_features)
+        
+        # Classification
+        output = self.classifier(fused_features)
+        
+        return output
+
+# ============================================================================
+# HMM POST-PROCESSING
+# ============================================================================
+
+class HMMPostProcessor:
+    """HMM-based temporal smoothing for activity recognition."""
+    
+    def __init__(self, n_components: int = 6, covariance_type: str = 'diag'):
+        self.n_components = n_components
+        self.covariance_type = covariance_type
+        self.models = {}
+        self.classes = None
+        
+    def fit(self, predictions: np.ndarray, labels: np.ndarray):
+        """Fit HMM models for each activity class."""
+        self.classes = np.unique(labels)
+        
+        for class_label in self.classes:
+            class_mask = labels == class_label
+            class_predictions = predictions[class_mask]
+            
+            if len(class_predictions) < self.n_components:
+                logger.warning(f"Not enough samples for class {class_label}")
+                continue
+                
+            # Reshape for HMM (samples x features)
+            if class_predictions.ndim == 1:
+                class_predictions = class_predictions.reshape(-1, 1)
+            
+            try:
+                model = GaussianHMM(
+                    n_components=self.n_components,
+                    covariance_type=self.covariance_type,
+                    n_iter=100,
+                    random_state=42
+                )
+                model.fit(class_predictions)
+                self.models[class_label] = model
+                
+            except Exception as e:
+                logger.warning(f"Failed to fit HMM for class {class_label}: {e}")
+        
+        logger.info(f"Fitted HMM models for {len(self.models)} classes")
+    
+    def smooth_predictions(self, predictions: np.ndarray) -> np.ndarray:
+        """Apply HMM smoothing to predictions."""
+        if not self.models:
+            logger.warning("No HMM models available, returning original predictions")
+            return predictions
+        
+        smoothed_predictions = predictions.copy()
+        
+        for i in range(1, len(predictions)):
+            current_pred = predictions[i]
+            
+            # Find the best HMM model for transition
+            best_score = -np.inf
+            best_class = current_pred
+            
+            for class_label, model in self.models.items():
+                try:
+                    # Predict next state
+                    if current_pred.ndim == 0:
+                        current_obs = np.array([[current_pred]])
+                    else:
+                        current_obs = current_pred.reshape(1, -1)
+                    
+                    # Get log likelihood
+                    score = model.score(current_obs)
+                    
+                    if score > best_score:
+                        best_score = score
+                        best_class = class_label
+                        
+                except Exception:
+                    continue
+            
+            smoothed_predictions[i] = best_class
+        
+        return smoothed_predictions
+
+# ============================================================================
+# TRAINING AND EVALUATION
+# ============================================================================
+
+class HARExperiment:
+    """Complete HAR experiment with improved training and evaluation."""
+    
+    def __init__(self, config: ExperimentConfig):
+        self.config = config
+        self.config.validate_all()
+        self.memory_monitor = MemoryMonitor()
+        self.device = torch.device(config.training.device)
+        
+        # Initialize components
+        self.model = None
+        self.optimizer = None
+        self.scheduler = None
+        self.criterion = nn.CrossEntropyLoss()
+        self.hmm_processor = HMMPostProcessor()
+        
+        # Metrics tracking
+        self.training_history = defaultdict(list)
+        self.best_val_f1 = 0
+        self.early_stop_counter = 0
+        
+        logger.info(f"Experiment initialized on device: {self.device}")
+    
+    def setup_model(self):
+        """Setup model and optimizer."""
+        self.model = PatchTSTHARModel(self.config.model, self.config.data).to(self.device)
+        
+        self.optimizer = torch.optim.AdamW(
+            self.model.parameters(),
+            lr=self.config.training.learning_rate,
+            weight_decay=self.config.training.weight_decay
+        )
+        
+        self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            self.optimizer,
+            mode='max',
+            factor=0.5,
+            patience=5,
+            verbose=True
+        )
+        
+        logger.info(f"Model setup complete. Parameters: {sum(p.numel() for p in self.model.parameters()):,}")
+    
+    def train_epoch(self, train_loader: DataLoader, epoch: int) -> Dict[str, float]:
+        """Train for one epoch with memory management."""
+        self.model.train()
+        total_loss = 0
+        total_samples = 0
+        all_predictions = []
+        all_labels = []
+        
+        try:
+            for batch_idx, batch in enumerate(train_loader):
+                data = batch['data'].to(self.device)
+                labels = batch['label'].squeeze().to(self.device)
+                
+                self.optimizer.zero_grad()
+                
+                # Forward pass with mixed precision
+                if self.config.training.use_amp and self.device.type == 'cuda':
+                    with torch.cuda.amp.autocast():
+                        outputs = self.model(data)
+                        loss = self.criterion(outputs, labels)
+                else:
+                    outputs = self.model(data)
+                    loss = self.criterion(outputs, labels)
+                
+                # Backward pass
+                if self.config.training.use_amp and self.device.type == 'cuda':
+                    self.scaler.scale(loss).backward()
+                    
+                    # Gradient clipping
+                    self.scaler.unscale_(self.optimizer)
+                    torch.nn.utils.clip_grad_norm_(
+                        self.model.parameters(),
+                        self.config.training.gradient_clip_val
+                    )
+                    
+                    self.scaler.step(self.optimizer)
+                    self.scaler.update()
+                else:
+                    loss.backward()
+                    torch.nn.utils.clip_grad_norm_(
+                        self.model.parameters(),
+                        self.config.training.gradient_clip_val
+                    )
+                    self.optimizer.step()
+                
+                # Metrics
+                total_loss += loss.item()
+                total_samples += data.size(0)
+                
+                # Get predictions for metrics
+                with torch.no_grad():
+                    predictions = torch.argmax(outputs, dim=1)
+                    all_predictions.extend(predictions.cpu().numpy())
+                    all_labels.extend(labels.cpu().numpy())
+                
+                # Memory management
+                if batch_idx % 10 == 0:
+                    memory_info = self.memory_monitor.get_memory_usage()
+                    logger.debug(f"Batch {batch_idx}/{len(train_loader)}, Memory: {memory_info['cpu_memory_mb']:.1f}MB")
+                    
+                    # Clean up tensors
+                    del data, labels, outputs, loss
+                    if self.device.type == 'cuda':
+                        torch.cuda.empty_cache()
+        
+        except Exception as e:
+            logger.error(f"Training error in epoch {epoch}: {e}")
+            raise
+        
+        # Calculate epoch metrics
+        avg_loss = total_loss / len(train_loader)
+        accuracy = accuracy_score(all_labels, all_predictions)
+        f1 = f1_score(all_labels, all_predictions, average='weighted')
+        
+        return {
+            'loss': avg_loss,
+            'accuracy': accuracy,
+            'f1_score': f1
+        }
+    
+    def validate_epoch(self, val_loader: DataLoader) -> Dict[str, float]:
+        """Validate for one epoch."""
+        self.model.eval()
+        total_loss = 0
+        all_predictions = []
+        all_labels = []
+        
+        try:
+            with torch.no_grad():
+                for batch in val_loader:
+                    data = batch['data'].to(self.device)
+                    labels = batch['label'].squeeze().to(self.device)
+                    
+                    outputs = self.model(data)
+                    loss = self.criterion(outputs, labels)
+                    
+                    total_loss += loss.item()
+                    predictions = torch.argmax(outputs, dim=1)
+                    
+                    all_predictions.extend(predictions.cpu().numpy())
+                    all_labels.extend(labels.cpu().numpy())
+                    
+                    # Clean up
+                    del data, labels, outputs, loss
+        
+        except Exception as e:
+            logger.error(f"Validation error: {e}")
+            raise
+        
+        # Calculate metrics
+        avg_loss = total_loss / len(val_loader)
+        accuracy = accuracy_score(all_labels, all_predictions)
+        f1 = f1_score(all_labels, all_predictions, average='weighted')
+        
+        return {
+            'loss': avg_loss,
+            'accuracy': accuracy,
+            'f1_score': f1
+        }
+    
+    def train(self, train_data: np.ndarray, train_labels: np.ndarray, 
+              val_data: np.ndarray = None, val_labels: np.ndarray = None):
+        """Complete training procedure."""
+        logger.info("Starting training procedure...")
+        
+        # Setup model
+        self.setup_model()
+        
+        # Initialize scaler for mixed precision
+        if self.config.training.use_amp and self.device.type == 'cuda':
+            self.scaler = torch.cuda.amp.GradScaler()
+        
+        # Create datasets
+        train_dataset = HARRawDataset(train_data, train_labels, self.config.data)
+        
+        if val_data is not None and val_labels is not None:
+            val_dataset = HARRawDataset(val_data, val_labels, self.config.data)
+            val_loader = DataLoader(
+                val_dataset,
+                batch_size=self.config.data.batch_size,
+                shuffle=False,
+                num_workers=self.config.data.num_workers
+            )
+        else:
+            val_loader = None
+        
+        # Create data loaders
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=self.config.data.batch_size,
+            shuffle=True,
+            num_workers=self.config.data.num_workers
+        )
+        
+        # Training loop
+        for epoch in range(self.config.training.n_epochs):
+            start_time = time.time()
+            
+            # Training
+            train_metrics = self.train_epoch(train_loader, epoch)
+            
+            # Validation
+            val_metrics = None
+            if val_loader is not None:
+                val_metrics = self.validate_epoch(val_loader)
+            
+            # Update history
+            self.training_history['train_loss'].append(train_metrics['loss'])
+            self.training_history['train_accuracy'].append(train_metrics['accuracy'])
+            self.training_history['train_f1'].append(train_metrics['f1_score'])
+            
+            if val_metrics:
+                self.training_history['val_loss'].append(val_metrics['loss'])
+                self.training_history['val_accuracy'].append(val_metrics['accuracy'])
+                self.training_history['val_f1'].append(val_metrics['f1_score'])
+            
+            # Print progress
+            epoch_time = time.time() - start_time
+            logger.info(
+                f"Epoch {epoch+1}/{self.config.training.n_epochs} "
+                f"({epoch_time:.1f}s) - "
+                f"Train: Loss={train_metrics['loss']:.4f}, "
+                f"Acc={train_metrics['accuracy']:.4f}, "
+                f"F1={train_metrics['f1_score']:.4f}"
+            )
+            
+            if val_metrics:
+                logger.info(
+                    f"           Val: Loss={val_metrics['loss']:.4f}, "
+                    f"Acc={val_metrics['accuracy']:.4f}, "
+                    f"F1={val_metrics['f1_score']:.4f}"
+                )
+            
+            # Early stopping
+            if val_metrics:
+                current_f1 = val_metrics['f1_score']
+                if current_f1 > self.best_val_f1 + self.config.training.min_delta:
+                    self.best_val_f1 = current_f1
+                    self.early_stop_counter = 0
+                    
+                    # Save best model
+                    self.save_checkpoint('best_model.pth')
+                else:
+                    self.early_stop_counter += 1
+                    
+                # Learning rate scheduling
+                self.scheduler.step(current_f1)
+                
+                # Early stopping
+                if self.early_stop_counter >= self.config.training.patience:
+                    logger.info(f"Early stopping triggered after {epoch+1} epochs")
+                    break
+            
+            # Memory cleanup
+            if epoch % 5 == 0:
+                self.memory_monitor.cleanup()
+        
+        logger.info("Training completed!")
+    
+    def evaluate(self, test_data: np.ndarray, test_labels: np.ndarray, 
+                apply_hmm: bool = True) -> Dict[str, float]:
+        """Evaluate the model on test data."""
+        logger.info("Starting evaluation...")
+        
+        self.model.eval()
+        test_dataset = HARRawDataset(test_data, test_labels, self.config.data)
+        test_loader = DataLoader(
+            test_dataset,
+            batch_size=self.config.data.batch_size,
+            shuffle=False,
+            num_workers=self.config.data.num_workers
+        )
+        
+        all_predictions = []
+        all_labels = []
+        all_probabilities = []
+        
+        try:
+            with torch.no_grad():
+                for batch in test_loader:
+                    data = batch['data'].to(self.device)
+                    labels = batch['label'].squeeze().to(self.device)
+                    
+                    outputs = self.model(data)
+                    probabilities = F.softmax(outputs, dim=1)
+                    predictions = torch.argmax(outputs, dim=1)
+                    
+                    all_predictions.extend(predictions.cpu().numpy())
+                    all_labels.extend(labels.cpu().numpy())
+                    all_probabilities.extend(probabilities.cpu().numpy())
+                    
+                    # Clean up
+                    del data, labels, outputs, probabilities
+        
+        except Exception as e:
+            logger.error(f"Evaluation error: {e}")
+            raise
+        
+        # Convert to numpy arrays
+        all_predictions = np.array(all_predictions)
+        all_labels = np.array(all_labels)
+        all_probabilities = np.array(all_probabilities)
+        
+        # HMM post-processing
+        if apply_hmm and len(all_predictions) > 10:
+            logger.info("Applying HMM post-processing...")
+            
+            # Fit HMM on validation data if available
+            if hasattr(self, 'val_predictions_for_hmm') and hasattr(self, 'val_labels_for_hmm'):
+                try:
+                    self.hmm_processor.fit(self.val_predictions_for_hmm, self.val_labels_for_hmm)
+                    all_predictions = self.hmm_processor.smooth_predictions(all_predictions)
+                except Exception as e:
+                    logger.warning(f"HMM post-processing failed: {e}")
+        
+        # Calculate metrics
+        accuracy = accuracy_score(all_labels, all_predictions)
+        f1_weighted = f1_score(all_labels, all_predictions, average='weighted')
+        f1_macro = f1_score(all_labels, all_predictions, average='macro')
+        f1_micro = f1_score(all_labels, all_predictions, average='micro')
+        
+        results = {
+            'accuracy': accuracy,
+            'f1_weighted': f1_weighted,
+            'f1_macro': f1_macro,
+            'f1_micro': f1_micro,
+            'predictions': all_predictions,
+            'labels': all_labels,
+            'probabilities': all_probabilities
+        }
+        
+        # Print detailed results
+        logger.info("\n" + "="*50)
+        logger.info("EVALUATION RESULTS")
+        logger.info("="*50)
+        logger.info(f"Accuracy: {accuracy:.4f}")
+        logger.info(f"F1 (Weighted): {f1_weighted:.4f}")
+        logger.info(f"F1 (Macro): {f1_macro:.4f}")
+        logger.info(f"F1 (Micro): {f1_micro:.4f}")
+        
+        # Classification report
+        class_names = [f"Class_{i}" for i in range(self.config.data.n_classes)]
+        report = classification_report(all_labels, all_predictions, target_names=class_names)
+        logger.info(f"\nClassification Report:\n{report}")
+        
+        # Confusion matrix
+        cm = confusion_matrix(all_labels, all_predictions)
+        logger.info(f"\nConfusion Matrix:\n{cm}")
+        
+        return results
+    
+    def save_checkpoint(self, filename: str):
+        """Save model checkpoint."""
+        checkpoint = {
+            'model_state_dict': self.model.state_dict(),
+            'optimizer_state_dict': self.optimizer.state_dict(),
+            'config': self.config.__dict__,
+            'training_history': dict(self.training_history),
+            'best_val_f1': self.best_val_f1
+        }
+        
+        save_path = Path(self.config.save_path) / filename
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(checkpoint, save_path)
+        logger.info(f"Checkpoint saved to {save_path}")
+    
+    def load_checkpoint(self, filename: str):
+        """Load model checkpoint."""
+        save_path = Path(self.config.save_path) / filename
+        checkpoint = torch.load(save_path, map_location=self.device)
+        
+        self.model.load_state_dict(checkpoint['model_state_dict'])
+        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        self.training_history = defaultdict(list, checkpoint['training_history'])
+        self.best_val_f1 = checkpoint.get('best_val_f1', 0)
+        
+        logger.info(f"Checkpoint loaded from {save_path}")
+
+# ============================================================================
+# MAIN USAGE EXAMPLE
+# ============================================================================
+
+def run_patchtst_har_experiment():
+    """Complete example of running PatchTST-HAR experiment."""
+    
+    # Create experiment configuration
+    config = ExperimentConfig(
+        experiment_name="patchtst_har_improved",
+        save_path="./experiments"
+    )
+    
+    # Adjust config for your dataset
+    config.data.sequence_length = 128
+    config.data.n_classes = 6  # Adjust based on your activities
+    config.data.batch_size = 32
+    config.training.n_epochs = 50
+    config.training.learning_rate = 1e-4
+    
+    # Create experiment
+    experiment = HARExperiment(config)
+    
+    # Load your data here (replace with your data loading)
+    # This is a placeholder - replace with your actual data
+    np.random.seed(42)
+    n_samples = 1000
+    
+    # Simulate HAR data
+    data = np.random.randn(n_samples, 128, 6)  # samples, timesteps, features
+    labels = np.random.randint(0, 6, n_samples)  # 6 activity classes
+    
+    # Create sequences
+    sequences, sequence_labels = create_sequences(
+        data, labels, 
+        config.data.sequence_length, 
+        config.data.hop_length
+    )
+    
+    # Split data
+    X_train, X_test, y_train, y_test = train_test_split(
+        sequences, sequence_labels,
+        test_size=config.data.test_size,
+        random_state=config.data.random_state,
+        stratify=sequence_labels
+    )
+    
+    X_train, X_val, y_train, y_val = train_test_split(
+        X_train, y_train,
+        test_size=0.2,
+        random_state=config.data.random_state,
+        stratify=y_train
+    )
+    
+    logger.info(f"Data splits - Train: {len(X_train)}, Val: {len(X_val)}, Test: {len(X_test)}")
+    
+    # Train the model
+    experiment.train(X_train, y_train, X_val, y_val)
+    
+    # Evaluate
+    results = experiment.evaluate(X_test, y_test, apply_hmm=True)
+    
+    # Save configuration
+    config.save("./experiments/config.json")
+    
+    return experiment, results
+
+if __name__ == "__main__":
+    # Run the experiment
+    experiment, results = run_patchtst_har_experiment()
+    
+    print("\nExperiment completed successfully!")
+    print(f"Final accuracy: {results['accuracy']:.4f}")
+    print(f"Final F1 (weighted): {results['f1_weighted']:.4f}")

@@ -7,7 +7,7 @@ This implementation provides:
 - PatchTST architecture with Rotary Positional Embeddings (RoPE)
 - Statistical feature extraction (56 features)
 - Topological feature extraction using persistent homology (24 features)
-- Comprehensive evaluation metrics including Cohen's Kappa, MCC, F2-score
+- Comprehensive evaluation metrics including Cohen's Kappa, MCC, F2-score, F-1 score, Pearson-Yule, Accuracy. 
 - HMM post-processing for temporal smoothing
 - Computational profiling and real-time feasibility analysis
 

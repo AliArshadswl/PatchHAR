@@ -1,209 +1,296 @@
-# PatchTST-HAR + Enhanced Metrics & Computational Profiling
-Human Activity Recognition implementation combining PatchTST with RoPE, statistical features, topological features, and comprehensive evaluation metrics with computational profiling.
+# 🧠 PatchHAR: Patch-Transformer with Statistical & Topological Embeddings for Wearable Human Activity Recognition
 
+PatchHAR is a compact, interpretable, and high-performance Transformer framework for **sensor-based Human Activity Recognition (HAR)**.  
+It extends the idea of patching from PatchTST but introduces a completely new modeling pipeline tailored for wearable accelerometer data.
 
-## Overview
-This implementation provides:
-- PatchTST architecture with Rotary Positional Embeddings (RoPE)
-- Statistical feature extraction (56 features)
-- Topological feature extraction using persistent homology (24 features)
-- Comprehensive evaluation metrics including Cohen's Kappa, MCC, F2-score, F-1 score, Pearson-Yule, Accuracy. 
-- HMM post-processing for temporal smoothing
-- Computational profiling and real-time feasibility analysis
+This repository contains the full implementation of PatchHAR, including:
+- Multi-axis patch embedding
+- Rotary positional embeddings (RoPE)
+- Statistical token (56-D)
+- Topological token (24-D via persistent homology)
+- Self-supervised masked patch reconstruction
+- Transformer encoder
+- HMM temporal smoothing
+- Comprehensive evaluation and computational profiling
 
+---
 
-## Configuration
-Key parameters defined in the Config class:
-```python
-# Data Configuration
-WINDOW_SIZE = 1000      # Window size in samples
-PATCH_LEN = 100         # Patch length
-N_PATCHES = 10          # Number of patches per window
-CHANNELS = 3            # Number of sensor channels
-# Model Configuration  
-D_MODEL = 56            # Model embedding dimension
-N_HEADS = 2             # Number of attention heads
-N_LAYERS = 2            # Number of transformer layers
-DROPOUT = 0.3           # Dropout rate
-# Feature Configuration
-N_STAT_FEATURES = 56    # Number of statistical features
-N_TOPO_FEATURES = 24    # Number of topological features
-TAKENS_M = 3            # Takens embedding dimension
-TAKENS_TAU = 5          # Takens embedding delay
-# Training Configuration
-BATCH_SIZE = 32
-EPOCHS = 30
-LR = 1e-4               # Learning rate
-WEIGHT_DECAY = 1e-4     # Weight decay
-```
+# 🌟 Why PatchHAR?
 
+Wearable HAR requires models that can:
+1. Capture **local temporal dynamics**  
+2. Preserve **cross-axis motion coupling** (x–y–z accelerometer)
+3. Recognize **global structure** of motion (periodicity, fragmentation, posture)
+4. Adapt across subjects and datasets  
+5. Remain compact and efficient  
 
-## Architecture
-### Model Components
-1. **TemporalEmbedding**: Projects time features to embeddings
-2. **PatchEmbedding**: Processes time series patches and fuses with features
-3. **RoPETransformerEncoderLayer**: Transformer layer with rotary positional embeddings
-4. **RoPETransformerEncoder**: Multi-layer transformer encoder
-5. **PatchTSTClassifier**: Complete classification model
-### Feature Extraction
+PatchHAR addresses all of these needs by combining:
+- **Patch-level temporal modeling**
+- **Statistical summarization of each 10-s window**
+- **Topological descriptors of the motion trajectory**
+- **RoPE attention** for improved temporal reasoning
+- **Self-supervised pretraining** for generalization
 
+---
 
-#### Statistical Features (56 features)
-- Basic statistics (mean, std, range) for each channel and magnitude
-- Cross-correlations between channels
-- Quartiles and percentiles
-- Spectral analysis (dominant frequencies, spectral entropy)
-- Peak detection and prominences
-- Gravity vector angles
-- Autocorrelation
+# 📌 What’s New in PatchHAR?
 
+PatchHAR introduces two global tokens that capture structure beyond raw time series:
 
-#### Topological Features (24 features)
-- Persistent homology using Takens embedding
-- Persistence entropy
-- Top-k lifetimes
-- Birth/death statistics
-- Quantile-based features
-- Fallback computation when ripser unavailable
+### **1. 56-D Statistical Token**
+Includes:
+- Per-axis and magnitude statistics  
+- Skewness, kurtosis  
+- Cross-axis correlations  
+- Quartiles  
+- Spectral entropy and dominant frequencies  
+- Peak morphology  
+- Gravity & dynamic orientation angles  
 
+### **2. 24-D Topological Token**
+Built from:
+- Takens embeddings of motion magnitude  
+- Vietoris–Rips persistent homology  
+- Persistence entropy  
+- Lifetimes (birth–death)  
+- Topological complexity signatures  
 
-#### Time Features (5 features)
-- Hour of day (normalized)
-- Minute of hour (normalized)  
-- Weekday (normalized)
-- Weekend indicator
-- Time of day category
-## Dataset Requirements
-Expected data structure:
-```
+These two tokens summarize:
+- **Intensity**
+- **Periodicity**
+- **Geometric structure**
+- **Fragmentation**
+- **Postural characteristics**
+
+and complement the patch embeddings beautifully.
+
+---
+
+# 🔍 How PatchHAR Differs from PatchTST and CT-PatchTST
+
+PatchHAR only inherits the *idea of patching*.  
+Everything else is different.
+
+## **PatchTST**
+- Processes **each channel independently** (x, y, z)
+- Channel-wise patches  
+- Additive positional embeddings  
+- No early cross-channel interaction  
+- Designed for forecasting, not HAR  
+
+## **CT-PatchTST**
+- Also begins with **channel-wise patching**
+- Adds channel attention + time attention
+- Still relies on separated channel token streams
+
+---
+
+# 🚀 PatchHAR (Ours)
+
+**Our pipeline is fundamentally different:**
+
+### ✔ Joint Multi-Axis Windowing  
+We take the full window:  
+→ **Cross-axis coupling is preserved from the very beginning.**
+
+### ✔ Linear Projection Before Attention  
+Each patch is:
+1. Flattened  
+2. Linearly projected to a 56-D embedding  
+
+No attention is applied yet.
+
+This is **NOT** how PatchTST or CT-PatchTST works.
+
+### ✔ Attention Across Patches (Not Channels)  
+Self-attention operates across:
+- 10 patch tokens  
+- 1 statistical token  
+- 1 topological token  
+
+### ✔ Mean pooling → Classifier head → Activity prediction
+
+---
+
+# 🖼 Model Overview
+
+Below is the core PatchHAR architecture:
+
+![Graphical Abstract](sandbox:/mnt/data/framework_har%20%282%29.pdf)
+
+---
+
+# 📚 Model Architecture
+
+### **Patch Embedding**
+- Converts each 100×3 patch into a 56-D vector  
+- Preserves multivariate structure
+
+### **RoPE Transformer Encoder**
+- 2 layers  
+- 2 heads  
+- 56-D hidden size  
+- Rotary positional embeddings for better temporal consistency  
+
+### **Multi-View Token Fusion**
+Tokens fed into Transformer:
+
+| Token Type | Description |
+|------------|-------------|
+| Patch tokens | 10 tokens representing local temporal patterns |
+| Statistical token | 56-D global statistical summary |
+| Topological token | 24-D geometric summary from persistent homology |
+
+### **Self-Supervised Pretraining**
+- Masked Patch Reconstruction (MPR)
+- Improves representation learning in unlabeled data
+
+### **Fine-Tuning**
+- Classification head  
+- Optional HMM smoothing for sequence consistency  
+
+---
+
+# 📊 Evaluation Metrics
+
+PatchHAR supports a complete evaluation suite:
+
+### **Standard Metrics**
+- Accuracy  
+- Balanced accuracy  
+- Macro/Weighted F1  
+
+### **Advanced Metrics**
+- Cohen’s κ  
+- Matthews Correlation Coefficient  
+- Pearson–Yule φ  
+- F2-score  
+
+### **Sequence Metrics**
+- Transition accuracy  
+- Per-participant evaluation  
+
+---
+
+# ⚙ Computational Profiling
+
+We provide full profiling scripts covering:
+
+### **Topological Feature Costs**
+- Embedding latency  
+- PH computation time  
+- Percentile statistics  
+
+### **Model Complexity**
+- Parameter counts  
+- FLOPs  
+- Model size  
+
+### **Inference Profiling**
+- Per-batch latency  
+- Per-sample latency  
+- Throughput (samples/s)  
+
+### **Real-Time Feasibility**
+- p95 latency analysis  
+- Window-duration comparison  
+
+---
+
+# 📦 Dataset Format
+
+Folder structure:
 processed_minimal/
-├── classes.json              # Class labels
-├── label_encoder.json        # Label encoding mapping
-├── manifest.csv             # Data manifest
-├── participant_001.npz      # Individual participant data
-├── participant_002.npz      # Individual participant data
-└── ...
-```
-Each `.npz` file contains:
-- `windows`: numpy array of shape (N_windows, 1000, 3)
-- `labels_str`: numpy array of activity labels
-- `first_ts_epoch_ns`: numpy array of timestamps
-## Evaluation Metrics
+├── classes.json
+├── label_encoder.json
+├── manifest.csv
+├── participant_001.npz
+└── participant_002.npz
 
+Each `.npz` contains:
 
-### Standard Metrics
-- Accuracy
-- Balanced Accuracy  
-- F1-score (macro and weighted)
-- Precision (macro)
-- Recall (macro)
+- `windows` → (N, 1000, 3)  
+- `labels_str`  
+- `first_ts_epoch_ns`  
 
+---
 
-### Advanced Metrics
-- Cohen's Kappa (κ)
-- Matthews Correlation (MCC)
-- Pearson-Yule Phi coefficient
-- F2 Score (recall-weighted)
+# ▶ Usage
 
-
-### Sequence-Level Metrics
-- Transition accuracy (accuracy on activity changes)
-- Per-participant analysis
-
-
-## Computational Profiling
-The implementation includes comprehensive profiling:
-
-
-### Topological Feature Profiling
-- Timing breakdown for preprocessing, embedding, computation, and feature extraction
-- Statistical analysis (mean, std, min, max, percentiles)
-- Configurable number of samples and warmup iterations
-
-
-### Model Complexity Analysis
-- Total parameters count
-- Trainable parameters count
-- FLOPs estimation
-- Model size calculation
-
-
-### End-to-End Inference Profiling
-- Batch inference timing
-- Per-sample inference timing
-- Throughput calculation (samples/second)
-
-
-### Real-Time Feasibility Analysis
-- Comparison of total latency vs. window duration
-- P95 latency analysis
-- Real-time capability assessment
-
-
-## HMM Post-Processing
-Hidden Markov Model implementation for temporal smoothing:
-- Estimates transition matrix and initial probabilities from training data
-- Viterbi decoding for sequence prediction
-- Configurable smoothing parameters
-- Per-participant sequence processing
-
-
-## Usage
-Run the main implementation:
-```python
+### **Train + Evaluate**
+```bash
 python main.py
-```
-The script will:
-1. Load and split participant data
-2. Profile computational costs
-3. Train the model with early stopping
-4. Evaluate with comprehensive metrics
-5. Apply HMM post-processing
-6. Generate visualizations and reports
-7. Save all results and artifacts
+What the script does:
+
+Load and split participant data
+
+Train PatchHAR with early stopping
+
+Compute all metrics
+
+Apply HMM smoothing
+
+Generate visualizations
+
+Save results + reports
+
+Run computational profiling
+
+📁 Output Files
+
+computational_profiling.json
+
+metrics_raw_comprehensive.json
+
+metrics_hmm_comprehensive.json
+
+comprehensive_artifacts.pth
+
+EVALUATION_SUMMARY.txt
+
+Confusion matrices (raw + HMM)
+
+F1 comparison plots
+
+Cost breakdown visualizations
+
+🔧 Dependencies
+
+PyTorch
+
+NumPy
+
+Pandas
+
+Scikit-Learn
+
+SciPy
+
+Ripser (optional)
+
+Matplotlib / Seaborn
+
+🔒 Reproducibility
+
+The implementation fixes seeds for:
+
+Python
+
+NumPy
+
+PyTorch
+
+CUDA
+with deterministic settings enabled.
+
+❤️ Citation
+
+If you use PatchHAR, please cite our paper (coming soon).
 
 
-## Output Files
-The implementation generates:
-- `computational_profiling.json` - Profiling results
-- `metrics_raw_comprehensive.json` - Raw model metrics
-- `metrics_hmm_comprehensive.json` - HMM post-processed metrics  
-- `comprehensive_artifacts.pth` - Complete model and results bundle
-- `EVALUATION_SUMMARY.txt` - Human-readable summary report
-- `cm_raw_comprehensive.png` - Raw model confusion matrix
-- `cm_hmm_comprehensive.png` - HMM confusion matrix
-- `metrics_comparison.png` - Metrics comparison visualization
-- `per_class_f1_comparison.png` - Per-class F1 comparison
-- `computational_cost_breakdown.png` - Cost analysis visualization
 
 
-## Dependencies
-Required packages:
-- torch
-- numpy
-- pandas
-- scikit-learn
-- matplotlib
-- seaborn
-- ripser (optional, for topological features)
-- scipy (optional, for advanced signal processing)
 
 
-## Reproducibility
-The implementation sets random seeds for:
-- Python random
-- NumPy
-- PyTorch (CPU and GPU)
-- CUDA deterministic mode
-- Disabled benchmark mode
 
 
-## Key Features
-- AMP (Automatic Mixed Precision) support for GPU training
-- Gradient clipping for training stability
-- Class weight computation for imbalanced datasets
-- Early stopping with configurable patience
-- Comprehensive timing and memory profiling
-- Multiple visualization outputs
-- Structured JSON output for all metrics
-- Human-readable summary reports

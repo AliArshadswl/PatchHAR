@@ -119,9 +119,6 @@ Below is the core PatchHAR architecture:
 ![Graphical Abstract](https://github.com/AliArshadswl/PatchHAR/blob/main/Graphical_abstract.jpg)
 
 
-
----
-
 #  Model Architecture
 
 ### **Patch Embedding**
@@ -153,7 +150,7 @@ Tokens fed into Transformer:
 
 ---
 
-# 📊 Evaluation Metrics
+#  Evaluation Metrics
 
 PatchHAR supports a complete evaluation suite:
 
@@ -199,7 +196,7 @@ We provide full profiling scripts covering:
 
 ---
 
-# 📦 Dataset Format
+#  Dataset Format
 
 Folder structure:
 processed_minimal/

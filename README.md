@@ -1,4 +1,4 @@
-# 🧠 PatchHAR: Patch-Transformer with Statistical & Topological Embeddings for Wearable Human Activity Recognition
+# PatchHAR: Patch-Transformer with Statistical & Topological Embeddings for Wearable Human Activity Recognition
 
 PatchHAR is a compact, interpretable, and high-performance Transformer framework for **sensor-based Human Activity Recognition (HAR)**.  
 It extends the idea of patching from PatchTST but introduces a completely new modeling pipeline tailored for wearable accelerometer data.
@@ -15,7 +15,7 @@ This repository contains the full implementation of PatchHAR, including:
 
 ---
 
-# 🌟 Why PatchHAR?
+# Why PatchHAR?
 
 Wearable HAR requires models that can:
 1. Capture **local temporal dynamics**  
@@ -33,7 +33,7 @@ PatchHAR addresses all of these needs by combining:
 
 ---
 
-# 📌 What’s New in PatchHAR?
+#  What’s New in PatchHAR?
 
 PatchHAR introduces two global tokens that capture structure beyond raw time series:
 
@@ -66,7 +66,7 @@ and complement the patch embeddings beautifully.
 
 ---
 
-# 🔍 How PatchHAR Differs from PatchTST and CT-PatchTST
+# How PatchHAR Differs from PatchTST and CT-PatchTST
 
 PatchHAR only inherits the *idea of patching*.  
 Everything else is different.
@@ -85,7 +85,7 @@ Everything else is different.
 
 ---
 
-# 🚀 PatchHAR (Ours)
+#  PatchHAR (Ours)
 
 **Our pipeline is fundamentally different:**
 
@@ -120,7 +120,7 @@ Below is the core PatchHAR architecture:
 
 ---
 
-# 📚 Model Architecture
+#  Model Architecture
 
 ### **Patch Embedding**
 - Converts each 100×3 patch into a 56-D vector  
@@ -215,78 +215,67 @@ Each `.npz` contains:
 
 ---
 
-# ▶ Usage
+# Usage
 
-### **Train + Evaluate**
+## Train and Evaluate
 ```bash
 python main.py
-What the script does:
+```
 
-Load and split participant data
+## What the Script Does
 
-Train PatchHAR with early stopping
+- Loads and splits participant data
+- Trains PatchHAR with early stopping
+- Computes all evaluation metrics
+- Applies HMM-based temporal smoothing
+- Generates visualizations and analysis plots
+- Saves results and reports
+- Runs full computational profiling (parameters, FLOPs, latency, throughput)
 
-Compute all metrics
+## Output Files
 
-Apply HMM smoothing
+The pipeline automatically generates the following files:
 
-Generate visualizations
+- `computational_profiling.json` – Latency, throughput, PH timings, FLOPs, model size
+- `metrics_raw_comprehensive.json` – Raw model performance metrics
+- `metrics_hmm_comprehensive.json` – HMM-smoothed performance metrics
+- `comprehensive_artifacts.pth` – Full model checkpoint and artifacts
+- `EVALUATION_SUMMARY.txt` – Human-readable summary of all results
+- `cm_raw_comprehensive.png` – Raw confusion matrix
+- `cm_hmm_comprehensive.png` – HMM-smoothed confusion matrix
+- `metrics_comparison.png` – Metric comparison visualization
+- `per_class_f1_comparison.png` – Per-class F1 score comparison
+- `computational_cost_breakdown.png` – Computational cost analysis
 
-Save results + reports
+## Dependencies
 
-Run computational profiling
+PatchHAR requires the following libraries:
 
-📁 Output Files
+- PyTorch
+- NumPy
+- Pandas
+- Scikit-Learn
+- SciPy
+- Ripser (optional, for persistent homology)
+- Matplotlib
+- Seaborn
 
-computational_profiling.json
+## Reproducibility
 
-metrics_raw_comprehensive.json
+PatchHAR enforces reproducibility through fixed random seeds and deterministic settings.
+The system sets deterministic seeds for:
 
-metrics_hmm_comprehensive.json
+- Python
+- NumPy
+- PyTorch (CPU and GPU)
+- CUDA (deterministic backend when available)
 
-comprehensive_artifacts.pth
+Benchmark mode is disabled, and deterministic CUDA operations are enabled where possible.
 
-EVALUATION_SUMMARY.txt
+## Citation
 
-Confusion matrices (raw + HMM)
-
-F1 comparison plots
-
-Cost breakdown visualizations
-
-🔧 Dependencies
-
-PyTorch
-
-NumPy
-
-Pandas
-
-Scikit-Learn
-
-SciPy
-
-Ripser (optional)
-
-Matplotlib / Seaborn
-
-🔒 Reproducibility
-
-The implementation fixes seeds for:
-
-Python
-
-NumPy
-
-PyTorch
-
-CUDA
-with deterministic settings enabled.
-
-❤️ Citation
-
-If you use PatchHAR, please cite our paper (coming soon).
-
+If you use PatchHAR in your research or software, please cite our paper (to be released soon).
+Thank you for supporting the project.
 
 
 

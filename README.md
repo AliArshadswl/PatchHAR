@@ -116,7 +116,8 @@ Self-attention operates across:
 
 Below is the core PatchHAR architecture:
 
-![Graphical Abstract](sandbox:/mnt/data/framework_har%20%282%29.pdf)
+![Graphical Abstract](https://github.com/AliArshadswl/PatchHAR/blob/main/framework_har.pdf)
+
 
 ---
 

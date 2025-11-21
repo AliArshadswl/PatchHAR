@@ -1,4 +1,4 @@
-# PatchHAR: Patch-Transformer with Statistical & Topological Embeddings for Wearable Human Activity Recognition
+# PatchHAR: An Embedding Enhanced Patch-Transformer with Temporal Features for Sensor-based Human Activity Recognition
 
 PatchHAR is a compact, interpretable, and high-performance Transformer framework for **sensor-based Human Activity Recognition (HAR)**.  
 It extends the idea of patching from PatchTST but introduces a completely new modeling pipeline tailored for wearable accelerometer data.

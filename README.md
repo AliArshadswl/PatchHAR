@@ -171,7 +171,7 @@ PatchHAR supports a complete evaluation suite:
 
 ---
 
-# ⚙ Computational Profiling
+# Computational Profiling
 
 We provide full profiling scripts covering:
 

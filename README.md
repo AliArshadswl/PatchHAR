@@ -151,7 +151,7 @@ Hidden Markov Model implementation for temporal smoothing:
 ## Usage
 Run the main implementation:
 ```python
-python patchtst_har.py
+python main.py
 ```
 The script will:
 1. Load and split participant data
